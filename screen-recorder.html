@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offline Screen Recorder</title>
+<script>
+  // Applied before the page paints, so there is no flash of the wrong theme.
+  (function(){
+    var saved = localStorage.getItem('recorderAppearance') || 'dark';
+    var resolved = saved;
+    if(saved === 'system'){
+      resolved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-theme-choice', saved);
+  })();
+</script>
+<style>
+  :root, [data-theme="dark"]{
+    --bg: #000000;
+    --bg-glow: #141414;
+    --panel: #141414;
+    --panel-border: #2a2a2a;
+    --tape: #e8e4d8;
+    --tape-dim: #9a9686;
+    --rec: #d64545;
+    --rec-glow: rgba(214,69,69,0.35);
+    --ok: #4caf7d;
+    --amber: #d6a445;
+    --control-bg: #1a1a1a;
+    --control-bg-hover: #232323;
+    --switch-track-off: #333333;
+    --switch-track-on: #2f4a3a;
+    --mono: 'IBM Plex Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  }
+  [data-theme="light"]{
+    --bg: #f2f3f1;
+    --bg-glow: #dfe4de;
+    --panel: #ffffff;
+    --panel-border: #dcdfd9;
+    --tape: #1c231f;
+    --tape-dim: #6b7269;
+    --rec: #c0392b;
+    --rec-glow: rgba(192,57,43,0.25);
+    --ok: #2f8a5c;
+    --amber: #b5791f;
+    --control-bg: #eef0ec;
+    --control-bg-hover: #e2e5de;
+    --switch-track-off: #c9ccc5;
+    --switch-track-on: #bce6cd;
+    --mono: 'IBM Plex Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  }
+  [data-theme="cream"]{
+    --bg: #f1e6cd;
+    --bg-glow: #e6d3a8;
+    --panel: #faf3e2;
+    --panel-border: #e0cd9f;
+    --tape: #2c2417;
+    --tape-dim: #8a7857;
+    --rec: #c1502e;
+    --rec-glow: rgba(193,80,46,0.25);
+    --ok: #4c7f4a;
+    --amber: #b8862f;
+    --control-bg: #efe2c4;
+    --control-bg-hover: #e8d9b8;
+    --switch-track-off: #d9c9a0;
+    --switch-track-on: #cfe3c0;
+    --mono: 'IBM Plex Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    transition: background-color .2s ease, color .2s ease;
+    margin:0; padding:0; min-height:100%;
+    background:
+      radial-gradient(circle at 20% -10%, var(--bg-glow) 0%, transparent 60%),
+      var(--bg);
+    color: var(--tape);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .deck{ max-width: 640px; margin: 32px auto; padding: 0 20px 40px; }
+  .deck-header{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--panel-border);
+  }
+  .deck-header h1{
+    font-family: var(--mono); font-size: 15px; letter-spacing: 0.14em;
+    text-transform: uppercase; font-weight: 600; margin:0; color: var(--tape);
+  }
+  .deck-header .tag{ font-family: var(--mono); font-size: 11px; color: var(--tape-dim); letter-spacing: 0.08em; }
+
+  .panel{ background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 22px; margin-bottom: 16px; }
+  .panel-label{
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--tape-dim); margin: 0 0 16px;
+  }
+
+  .readout{ display:flex; align-items:center; justify-content: space-between; margin-bottom: 20px; }
+  .status-group{ display:flex; align-items:center; gap:10px; }
+  .dot{ width:10px; height:10px; border-radius:50%; background: var(--tape-dim); transition: all .2s ease; }
+  .dot.live{ background: var(--rec); box-shadow: 0 0 0 4px var(--rec-glow); animation: pulse 1.4s ease-in-out infinite; }
+  .dot.paused{ background: var(--amber); box-shadow: 0 0 0 4px rgba(214,164,69,0.3); animation:none; }
+  @keyframes pulse{ 0%,100%{ box-shadow: 0 0 0 4px var(--rec-glow);} 50%{ box-shadow: 0 0 0 8px transparent;} }
+  .status-text{ font-family: var(--mono); font-size: 13px; letter-spacing: 0.06em; color: var(--tape-dim); text-transform: uppercase; }
+  .timer{ font-family: var(--mono); font-size: 28px; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; color: var(--tape); }
+
+  .strip{ height: 44px; display:flex; align-items:center; gap:3px; margin-bottom: 20px; padding: 0 2px; }
+  .strip span{ flex:1; background: var(--panel-border); border-radius: 2px; height: 6%; transition: height .12s ease, background .3s ease; }
+  .strip.live span{ background: var(--ok); }
+
+  .transport{ display:flex; gap:10px; }
+  button{
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 12px 16px; border-radius: 6px; border: 1px solid var(--panel-border);
+    background: var(--control-bg); color: var(--tape); cursor:pointer; flex:1; transition: all .15s ease;
+  }
+  button:hover:not(:disabled){ border-color: var(--panel-border); background: var(--control-bg-hover); }
+  button:disabled{ opacity: 0.35; cursor: not-allowed; }
+  button.primary{ background: var(--rec); border-color: var(--rec); color: #1a0808; font-weight:600; }
+  button.primary:hover:not(:disabled){ background:#c53a3a; }
+  button.amber{ background: var(--amber); border-color: var(--amber); color:#231803; font-weight:600; }
+  button.amber:hover:not(:disabled){ background:#c4953d; }
+  button.ok{ background: var(--ok); border-color: var(--ok); color:#062012; font-weight:600; }
+  button.ok:hover:not(:disabled){ background:#3f9c69; }
+  button.ghost{ background:transparent; flex:none; padding: 9px 14px; }
+
+  .opt-row{ display:flex; align-items:flex-start; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--panel-border); gap: 16px; }
+  .opt-row:first-child{ border-top:none; padding-top:0; }
+  .opt-copy{ flex:1; }
+  .opt-title{ font-size: 14px; font-weight: 600; margin-bottom:3px; }
+  .opt-desc{ font-size: 12.5px; color: var(--tape-dim); line-height:1.5; }
+  .switch{ position: relative; width: 42px; height: 24px; flex-shrink:0; margin-top: 2px; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .slider{ position:absolute; inset:0; background:var(--switch-track-off); border-radius: 24px; cursor:pointer; transition: background .2s ease; }
+  .slider:before{ content:""; position:absolute; height:18px; width:18px; left:3px; top:3px; background: var(--tape-dim); border-radius:50%; transition: transform .2s ease, background .2s ease; }
+  input:checked + .slider{ background: var(--switch-track-on); }
+  input:checked + .slider:before{ transform: translateX(18px); background: var(--ok); }
+  input:disabled + .slider{ opacity:.4; cursor:not-allowed; }
+
+  .dropdown{
+    font-family: var(--mono); font-size: 12px; background: var(--control-bg); color: var(--tape);
+    border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px 10px;
+    flex-shrink:0; max-width: 220px; cursor:pointer;
+  }
+  .dropdown:hover{ border-color:var(--tape-dim); }
+  .dropdown:disabled{ opacity:.4; cursor:not-allowed; }
+  .res-hint{ font-family: var(--mono); font-size: 11px; color: var(--tape-dim); margin-top:6px; }
+
+  .mic-test-row{ display:flex; align-items:center; gap:10px; margin-bottom: 16px; }
+  .level-wrap{ flex:1; height: 10px; background:var(--control-bg); border:1px solid var(--panel-border); border-radius: 6px; overflow:hidden; position:relative; }
+  .level-fill{ height:100%; width:0%; background: linear-gradient(90deg, var(--ok), var(--amber) 75%, var(--rec) 92%); transition: width .08s linear; }
+  .level-label{ font-family: var(--mono); font-size: 11px; color: var(--tape-dim); width: 72px; text-align:right; flex-shrink:0; }
+
+  .foot-note{ font-family: var(--mono); font-size: 11.5px; color: var(--tape-dim); line-height: 1.6; padding-top: 4px; }
+
+  .result{ display:none; align-items:center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .result.show{ display:flex; }
+  .result a{ font-family: var(--mono); font-size: 13px; color: var(--ok); text-decoration: none; border: 1px solid var(--ok); padding: 10px 16px; border-radius: 6px; }
+  .result a:hover{ background: rgba(76,175,125,0.1); }
+  .result .meta{ font-family: var(--mono); font-size: 11.5px; color: var(--tape-dim); }
+
+  .err{ display:none; background: rgba(214,69,69,0.08); border: 1px solid rgba(214,69,69,0.4); color: #e79a9a; padding: 12px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; line-height:1.5; }
+  .err.show{ display:block; }
+  .note{ display:none; background: rgba(76,175,125,0.08); border: 1px solid rgba(76,175,125,0.35); color: #a9dcc0; padding: 10px 14px; border-radius: 8px; font-size: 12.5px; margin-bottom: 16px; line-height:1.5; }
+  .note.show{ display:block; }
+
+  .appearance-wrap{ position: fixed; top: 18px; right: 18px; z-index: 50; }
+  .appearance-btn{
+    height: 38px; padding: 0 14px 0 12px; border-radius: 20px;
+    background: var(--control-bg); border: 1px solid var(--panel-border);
+    color: var(--tape); cursor: pointer;
+    display:flex; align-items:center; gap: 7px;
+    font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  }
+  .appearance-btn:hover{ border-color:var(--tape-dim); background: var(--control-bg-hover); }
+  .appearance-btn .icon{ font-size: 15px; line-height:1; }
+  .appearance-menu{
+    display:none; position:absolute; top: 46px; right: 0;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 6px; min-width: 170px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  }
+  .appearance-menu.open{ display:block; }
+  .appearance-option{
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 8px 10px; border-radius: 6px; cursor:pointer;
+    font-family: var(--sans); font-size: 13px; color: var(--tape);
+  }
+  .appearance-option:hover{ background: var(--control-bg); }
+  .appearance-option.active{ color: var(--ok); font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="appearance-wrap">
+  <button class="appearance-btn" id="appearanceBtn" aria-label="Choose background" title="Choose background">
+    <span class="icon">&#127912;</span> Background
+  </button>
+  <div class="appearance-menu" id="appearanceMenu">
+    <div class="appearance-option" data-theme-value="system">System default</div>
+    <div class="appearance-option" data-theme-value="light">Light</div>
+    <div class="appearance-option" data-theme-value="dark">Dark</div>
+    <div class="appearance-option" data-theme-value="cream">Cream</div>
+  </div>
+</div>
+
+<div class="deck">
+  <div class="deck-header">
+    <h1>Screen Recorder</h1>
+    <span class="tag">Local &middot; Offline &middot; No Upload</span>
+  </div>
+
+  <div class="err" id="errBox"></div>
+
+  <div class="panel">
+    <div class="readout">
+      <div class="status-group">
+        <div class="dot" id="dot"></div>
+        <span class="status-text" id="statusText">Idle</span>
+      </div>
+      <div class="timer" id="timer">00:00:00</div>
+    </div>
+
+    <div class="strip" id="strip"></div>
+
+    <div class="transport">
+      <button class="primary" id="startBtn">Start Recording</button>
+      <button class="amber" id="pauseBtn" disabled>Pause</button>
+      <button class="ok" id="stopBtn" disabled>Stop</button>
+    </div>
+
+    <div class="result" id="resultRow" style="margin-top:16px;">
+      <span class="meta" id="resultMeta">&mdash;</span>
+      <a id="downloadLink" download="recording.webm">Download recording</a>
+    </div>
+    <div class="foot-note" style="margin-top:10px;">Saving starts automatically the moment you stop. It goes to your browser's default Downloads folder, or asks you where to save it, if your browser is set that way.</div>
+  </div>
+
+  <div class="panel">
+    <p class="panel-label">Video</p>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Quality &amp; resolution</div>
+        <div class="opt-desc">This is the quality you are asking for. The real result depends on your screen. For example, choosing 4K on a 1080p screen will not actually give you 4K detail.</div>
+      </div>
+      <select id="qualitySelect" class="dropdown">
+        <option value="auto" selected>Auto &middot; native screen res</option>
+        <option value="uhd">4K UHD &middot; 3840&times;2160</option>
+        <option value="qhd">2K QHD &middot; 2560&times;1440</option>
+        <option value="fhd">Full HD &middot; 1920&times;1080</option>
+        <option value="hd">HD &middot; 1280&times;720</option>
+        <option value="compact">Compact &middot; smallest file</option>
+      </select>
+    </div>
+    <div class="res-hint" id="resHint"></div>
+    <div class="res-hint" id="screenHint" style="margin-top:2px;"></div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Frame rate</div>
+        <div class="opt-desc">Higher fps looks smoother for fast motion or games, but creates a bigger file. 30fps is a good standard for tutorials and screen recordings.</div>
+      </div>
+      <select id="fpsSelect" class="dropdown">
+        <option value="15">15 fps</option>
+        <option value="24">24 fps</option>
+        <option value="30" selected>30 fps</option>
+        <option value="60">60 fps</option>
+      </select>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">File format</div>
+        <div class="opt-desc" id="formatDesc">WebM (VP9/Opus) is what every major browser can reliably record to. MP4 support depends on your browser/OS and is offered only when detected.</div>
+      </div>
+      <select id="formatSelect" class="dropdown">
+        <option value="webm">WebM</option>
+        <option value="mp4" selected>MP4 &middot; H.264, recommended</option>
+      </select>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Include system/tab audio</div>
+        <div class="opt-desc">Captures sound playing on your screen (a video, app audio) in addition to your mic, if your browser and selected source support it.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="sysAudioToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="panel-label">Microphone</p>
+    <div class="note" id="micNote"></div>
+
+    <div class="opt-row" style="border-top:none; padding-top:0;" id="deviceRow">
+      <div class="opt-copy">
+        <div class="opt-title">Device</div>
+        <div class="opt-desc" id="deviceDesc">Click "Add microphone" below once to confirm which mic is active.</div>
+      </div>
+      <select id="micSelect" class="dropdown" style="display:none;">
+        <option value="">Default microphone</option>
+      </select>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Microphone volume</div>
+        <div class="opt-desc">Boost a quiet mic or turn down a hot one.</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+        <input type="range" id="gainSlider" min="0" max="300" value="100" style="width:110px;">
+        <span class="level-label" id="gainLabel" style="width:40px;">100%</span>
+      </div>
+    </div>
+    <div class="res-hint" style="margin-top:-10px; margin-bottom:4px;">Recommended: 100% (unchanged) unless your mic sounds noticeably quiet. Pushing past ~150 to 180% amplifies background hiss along with your voice, and can start to distort or clip if you speak loudly. Automatic gain control has been removed, since its constant real time adjustment tended to cause pumping and pick up more background noise. A fixed manual level here gives cleaner, more consistent results.</div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Sample rate</div>
+        <div class="opt-desc">48kHz is the standard choice and works well for almost everyone. Only switch to 44.1kHz if you have a specific reason to.</div>
+      </div>
+      <select id="sampleRateSelect" class="dropdown">
+        <option value="48000" selected>48 kHz</option>
+        <option value="44100">44.1 kHz</option>
+      </select>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Mute microphone</div>
+        <div class="opt-desc">Silences your mic without removing it, so screen audio can still record if enabled above.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="muteToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Reduce background noise</div>
+        <div class="opt-desc">Browser level noise suppression handles steady sounds like fan hum, AC, and hiss in real time. It covers this on its own, so no separate setting is needed for those.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="noiseToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Echo cancellation</div>
+        <div class="opt-desc">Stops your speaker output (like a call partner's voice) from being picked back up by your mic.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="echoToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="opt-row">
+      <div class="opt-copy">
+        <div class="opt-title">Audio bitrate</div>
+        <div class="opt-desc">Independent of video quality. Raises how much detail is kept in the sound itself, which matters most for music, singing, or anything beyond plain speech.</div>
+      </div>
+      <select id="audioBitrateSelect" class="dropdown">
+        <option value="96000">Standard &middot; 96 kbps</option>
+        <option value="128000" selected>Good &middot; 128 kbps</option>
+        <option value="192000">High &middot; 192 kbps</option>
+        <option value="256000">Best &middot; 256 kbps</option>
+      </select>
+    </div>
+
+    <div class="foot-note" style="margin-bottom:14px;">If you change any setting above, click "Add microphone" again below to apply it.</div>
+
+    <div class="mic-test-row">
+      <button class="ghost" id="testMicBtn" style="border:1px solid var(--panel-border);">Add microphone</button>
+      <div class="level-wrap"><div class="level-fill" id="levelFill"></div></div>
+      <span class="level-label" id="levelLabel">&mdash;</span>
+    </div>
+
+    <div class="foot-note">Recording never leaves this page, and nothing is uploaded anywhere.</div>
+  </div>
+
+  <div class="panel">
+    <p class="panel-label">Safety</p>
+    <div class="opt-row" style="border-top:none; padding-top:0;">
+      <div class="opt-copy">
+        <div class="opt-title">If the tab is closed mid-recording</div>
+        <div class="opt-desc" id="safetyDesc">Your browser will first ask you to confirm before the tab actually closes. If you go through with it anyway, this tool makes one best effort attempt to save whatever was captured up to that instant, as a single file, with no repeated checkpoint files. This isn't guaranteed (some browsers block downloads at the moment of closing), but it costs nothing to try.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="panel-label">Compatibility</p>
+    <div class="foot-note">
+      Works on Chrome, Edge, and Firefox on Windows, Mac, and Linux. This is a single, self contained file, so you can send it to anyone and they open it the same way, with no install or account needed. Not supported on mobile browsers (screen recording from a web page isn't available there, and not at all on iOS Safari).
+    </div>
+  </div>
+
+  <div class="foot-note" style="text-align:center; margin-top:8px; opacity:0.8;">
+    This tool is free to use and free to share as it is. Please do not sell it, repackage it, or present it as your own work. © 2026 Mehedi Hasan (Joy). All rights reserved. Published 14 August 2026.
+  </div>
+</div>
+
+<script>
+(function(){
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const dot = document.getElementById('dot');
+  const statusText = document.getElementById('statusText');
+  const timerEl = document.getElementById('timer');
+  const strip = document.getElementById('strip');
+  const resultRow = document.getElementById('resultRow');
+  const resultMeta = document.getElementById('resultMeta');
+  const downloadLink = document.getElementById('downloadLink');
+  const noiseToggle = document.getElementById('noiseToggle');
+  const echoToggle = document.getElementById('echoToggle');
+  const audioBitrateSelect = document.getElementById('audioBitrateSelect');
+  const sysAudioToggle = document.getElementById('sysAudioToggle');
+  const qualitySelect = document.getElementById('qualitySelect');
+  const resHint = document.getElementById('resHint');
+  const screenHint = document.getElementById('screenHint');
+  const fpsSelect = document.getElementById('fpsSelect');
+  const formatSelect = document.getElementById('formatSelect');
+  const formatDesc = document.getElementById('formatDesc');
+  const sampleRateSelect = document.getElementById('sampleRateSelect');
+  const gainSlider = document.getElementById('gainSlider');
+  const gainLabel = document.getElementById('gainLabel');
+  const micSelect = document.getElementById('micSelect');
+  const deviceDesc = document.getElementById('deviceDesc');
+  const muteToggle = document.getElementById('muteToggle');
+  const testMicBtn = document.getElementById('testMicBtn');
+  const levelFill = document.getElementById('levelFill');
+  const levelLabel = document.getElementById('levelLabel');
+  const errBox = document.getElementById('errBox');
+  const micNote = document.getElementById('micNote');
+
+  // ---- support check ----
+  const supportIssues = [];
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) supportIssues.push('screen capture (getDisplayMedia)');
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) supportIssues.push('microphone capture (getUserMedia)');
+  if(typeof MediaRecorder === 'undefined') supportIssues.push('the recording engine (MediaRecorder)');
+  if(supportIssues.length){
+    showError('This browser does not support ' + supportIssues.join(', ') + '. Nothing will be recorded. Please try a recent version of Chrome, Edge, or Firefox on a desktop computer.');
+    startBtn.disabled = true;
+  }
+
+  // "Native screen resolution" = the actual pixel dimensions your monitor is set to in your OS display
+  // settings (e.g. 1366x768, 1920x1080, 2560x1440...). We read screen.width/height directly — these
+  // report your display's resolution and are unaffected by browser zoom by definition, at any point:
+  // during the session, right after a reload, or even if the browser remembered a zoom level from last
+  // time you visited.
+  //
+  // The "Auto" bitrate below is calculated from that detected resolution, not a fixed number — a small
+  // laptop screen and a 4K monitor get different suggested bitrates, scaled relative to a 1920x1080
+  // baseline of 8 Mbps, so the figure shown actually matches what "Auto" will really request.
+  function calcAutoBitrate(w, h){
+    const scaled = 8_000_000 * (w * h) / (1920 * 1080);
+    return Math.round(Math.min(20_000_000, Math.max(2_000_000, scaled)) / 100_000) * 100_000;
+  }
+  let detectedW = Math.round(screen.width);
+  let detectedH = Math.round(screen.height);
+
+  const QUALITY_PRESETS = {
+    auto:     { width:null, height:null, label:'native screen resolution', videoBitsPerSecond: calcAutoBitrate(detectedW, detectedH), audioBitsPerSecond: 160_000 },
+    uhd:      { width:3840, height:2160, label:'3840\u00d72160', videoBitsPerSecond: 12_000_000, audioBitsPerSecond: 192_000 },
+    qhd:      { width:2560, height:1440, label:'2560\u00d71440', videoBitsPerSecond: 8_000_000,  audioBitsPerSecond: 160_000 },
+    fhd:      { width:1920, height:1080, label:'1920\u00d71080', videoBitsPerSecond: 5_000_000,  audioBitsPerSecond: 128_000 },
+    hd:       { width:1280, height:720,  label:'1280\u00d7720',  videoBitsPerSecond: 2_500_000,  audioBitsPerSecond: 96_000 },
+    compact:  { width:1280, height:720,  label:'1280\u00d7720, low bitrate', videoBitsPerSecond: 900_000, audioBitsPerSecond: 64_000 }
+  };
+
+  function updateResHint(){
+    const p = QUALITY_PRESETS[qualitySelect.value];
+    resHint.textContent = 'Requested: ' + p.label + ' \u00b7 ~' + (p.videoBitsPerSecond/1_000_000).toFixed(1) + ' Mbps video. This is calculated for your own screen, not a fixed number, and the actual result is still capped by your screen and hardware.';
+  }
+  updateResHint();
+  qualitySelect.addEventListener('change', updateResHint);
+
+  function reportScreenRes(){
+    detectedW = Math.round(screen.width);
+    detectedH = Math.round(screen.height);
+    QUALITY_PRESETS.auto.videoBitsPerSecond = calcAutoBitrate(detectedW, detectedH);
+    screenHint.textContent = 'Your detected screen resolution: ' + detectedW + '\u00d7' + detectedH +
+      '. This stays fixed regardless of browser zoom, on reload, or between sessions. Whatever screen or window you actually choose to share always captures at full size, this number only affects the suggested bitrate for Auto quality.';
+    if(qualitySelect.value === 'auto') updateResHint();
+  }
+  reportScreenRes();
+  // Safe to listen for resize: screen.width/height only change here if you actually move the window to
+  // a different monitor, never from zoom, since zoom isn't part of this calculation anymore.
+  window.addEventListener('resize', reportScreenRes);
+
+
+  // MP4 recording is inconsistent across browsers/OSes; only offer it if this browser actually supports it.
+  const mp4Supported = typeof MediaRecorder !== 'undefined' &&
+    (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') || MediaRecorder.isTypeSupported('video/mp4'));
+  if(!mp4Supported){
+    const mp4Opt = formatSelect.querySelector('option[value="mp4"]');
+    if(mp4Opt){ mp4Opt.disabled = true; mp4Opt.textContent = 'MP4 \u00b7 not supported in this browser'; }
+    formatSelect.value = 'webm';
+  }
+  function updateFormatDesc(){
+    if(formatSelect.value === 'mp4'){
+      formatDesc.textContent = 'This browser can record directly to MP4 (H.264/AAC). MP4 is usually more compatible with older devices than WebM.';
+    } else {
+      formatDesc.textContent = 'WebM (VP9/Opus) is what every major browser can reliably record to. Plays natively in Chrome, Edge, Firefox, and VLC; some older Windows Media Player versions need a codec pack.';
+    }
+  }
+  updateFormatDesc();
+  formatSelect.addEventListener('change', updateFormatDesc);
+
+  gainSlider.addEventListener('input', ()=>{
+    gainLabel.textContent = gainSlider.value + '%';
+    const g = gainSlider.value / 100;
+    if(testGainNode) testGainNode.gain.value = g;
+    if(recGainNode) recGainNode.gain.value = g;
+  });
+
+  const BAR_COUNT = 48;
+  for(let i=0;i<BAR_COUNT;i++){ strip.appendChild(document.createElement('span')); }
+  const bars = strip.querySelectorAll('span');
+
+  let mediaRecorder, chunks = [];
+  let displayStream, micStream, mixedStream;
+  let testStream = null, testAudioCtx = null, testAnalyser = null, testRaf = null, testGainNode = null;
+  let recAudioCtx, recAnalyser, recDataArray, recRaf, recGainNode = null;
+  let startTime = 0, elapsedBeforePause = 0, timerInterval;
+  let isPaused = false;
+  let hasUnsavedRecording = false;
+  let sessionId = '';
+
+  function showError(msg){ errBox.textContent = msg; errBox.classList.add('show'); }
+  function clearError(){ errBox.classList.remove('show'); errBox.textContent=''; }
+  function showNote(msg){ micNote.textContent = msg; micNote.classList.add('show'); }
+  function clearNote(){ micNote.classList.remove('show'); micNote.textContent=''; }
+
+  function fmtTime(ms){
+    const total = Math.floor(ms/1000);
+    const h = String(Math.floor(total/3600)).padStart(2,'0');
+    const m = String(Math.floor((total%3600)/60)).padStart(2,'0');
+    const s = String(total%60).padStart(2,'0');
+    return h+':'+m+':'+s;
+  }
+  function startTimer(){
+    startTime = Date.now();
+    timerInterval = setInterval(()=>{
+      const now = isPaused ? startTime : Date.now();
+      timerEl.textContent = fmtTime(elapsedBeforePause + (now - startTime));
+    }, 250);
+  }
+  function stopTimer(){ clearInterval(timerInterval); }
+
+  function setStatus(state){
+    dot.classList.remove('live','paused');
+    strip.classList.remove('live');
+    if(state === 'recording'){ dot.classList.add('live'); strip.classList.add('live'); statusText.textContent = 'Recording'; }
+    else if(state === 'paused'){ dot.classList.add('paused'); statusText.textContent = 'Paused'; }
+    else if(state === 'idle'){ statusText.textContent = 'Idle'; }
+    else if(state === 'stopped'){ statusText.textContent = 'Saved'; }
+  }
+
+  function animateBars(){
+    if(!recAnalyser) return;
+    recAnalyser.getByteFrequencyData(recDataArray);
+    const step = Math.floor(recDataArray.length / bars.length) || 1;
+    bars.forEach((bar, i)=>{
+      const v = recDataArray[i*step] || 0;
+      bar.style.height = Math.max(6, (v/255)*100) + '%';
+    });
+    recRaf = requestAnimationFrame(animateBars);
+  }
+  function stopBarsIdle(){ cancelAnimationFrame(recRaf); bars.forEach(b => b.style.height = '6%'); }
+
+  function emergencySaveOnClose(){
+    // Best-effort only: fires once, synchronously, the moment the tab is actually closing.
+    // Packages whatever has already reached `chunks` in memory (up to ~250ms old, since that's
+    // our MediaRecorder timeslice) into one file and attempts a download. Some browsers restrict
+    // triggering downloads during page unload, so this can silently fail to nothing more we can do.
+    const activelyRecording = mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused');
+    if(!activelyRecording || chunks.length === 0) return;
+    try{
+      const isMp4 = formatSelect.value === 'mp4' && mp4Supported;
+      const blob = new Blob(chunks, { type: isMp4 ? 'video/mp4' : 'video/webm' });
+      if(blob.size === 0) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'recording-' + sessionId + '-recovered' + (isMp4 ? '.mp4' : '.webm');
+      document.body.appendChild(a);
+      a.click();
+    }catch(e){ /* nothing further can be done once the page is closing */ }
+  }
+
+  function currentAudioConstraints(){
+    const c = {
+      echoCancellation: echoToggle.checked,
+      noiseSuppression: noiseToggle.checked,
+      autoGainControl: false,
+      sampleRate: { ideal: parseInt(sampleRateSelect.value, 10) }
+    };
+    if(micSelect.value) c.deviceId = { exact: micSelect.value };
+    return c;
+  }
+
+  async function populateMics(){
+    try{
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter(d => d.kind === 'audioinput');
+      const current = micSelect.value;
+      micSelect.innerHTML = '<option value="">Default microphone</option>';
+      mics.forEach((d, i)=>{
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        if(d.label){
+          opt.textContent = d.label;
+          opt.dataset.real = '1';
+        } else {
+          opt.textContent = 'Microphone ' + (i+1);
+          opt.dataset.real = '0';
+        }
+        micSelect.appendChild(opt);
+      });
+      if(current) micSelect.value = current;
+    }catch(e){ /* listing unsupported; default mic still usable */ }
+  }
+  populateMics();
+  if(navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', populateMics);
+
+  function levelLoop(){
+    if(!testAnalyser) return;
+    const data = new Uint8Array(testAnalyser.frequencyBinCount);
+    testAnalyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for(let i=0;i<data.length;i++){ const v = (data[i]-128)/128; sum += v*v; }
+    const rms = Math.sqrt(sum/data.length);
+    const pct = Math.min(100, Math.round(rms * 260));
+    levelFill.style.width = pct + '%';
+    if(muteToggle.checked){ levelLabel.textContent = 'Muted'; }
+    else if(pct < 4) levelLabel.textContent = 'Silent';
+    else if(pct < 25) levelLabel.textContent = 'Quiet';
+    else if(pct < 70) levelLabel.textContent = 'Good';
+    else levelLabel.textContent = 'Loud';
+    testRaf = requestAnimationFrame(levelLoop);
+  }
+
+  function teardownTest(){
+    cancelAnimationFrame(testRaf);
+    testRaf = null;
+    if(testStream){ testStream.getTracks().forEach(t=>t.stop()); testStream = null; }
+    if(testAudioCtx){ testAudioCtx.close(); testAudioCtx = null; }
+    testAnalyser = null;
+    testGainNode = null;
+    levelFill.style.width = '0%';
+    levelLabel.textContent = '\u2014';
+  }
+
+  async function testMic(){
+    clearError(); clearNote();
+    teardownTest();
+    testMicBtn.disabled = true;
+    testMicBtn.textContent = 'Requesting...';
+    try{
+      testStream = await navigator.mediaDevices.getUserMedia({ audio: currentAudioConstraints() });
+    }catch(e){
+      showError('Could not access a microphone: ' + (e.message || e.name) + '. No audio will be recorded until this is allowed.');
+      testMicBtn.disabled = false;
+      testMicBtn.textContent = 'Add microphone';
+      return;
+    }
+    testStream.getAudioTracks()[0].enabled = !muteToggle.checked;
+    // The currently active stream's own track always reports its true device name, regardless of
+    // whether enumerateDevices() exposes labels for your *other* devices (that part can be limited
+    // depending on how this page was opened).
+    const activeLabel = testStream.getAudioTracks()[0].label || 'your default microphone';
+    await populateMics();
+    const namedOptions = Array.from(micSelect.options).slice(1).filter(o => o.dataset.real === '1');
+    if(namedOptions.length > 1){
+      // Multiple real device names available — show the picker so the user can choose between them.
+      micSelect.style.display = '';
+      deviceDesc.textContent = 'Multiple microphones detected. Pick the one you want to use below.';
+    } else {
+      // Only one identifiable device (or names aren't exposed for the rest) — a picker with fake
+      // "Microphone 1 / Microphone 2" entries isn't useful, so just confirm what's actually active.
+      micSelect.style.display = 'none';
+      micSelect.value = '';
+      deviceDesc.textContent = 'Detected microphone: ' + activeLabel + '. This is the one that will be used when you start recording.';
+    }
+    showNote('Microphone connected. Speak to see the level move.');
+    testAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = testAudioCtx.createMediaStreamSource(testStream);
+    testGainNode = testAudioCtx.createGain();
+    testGainNode.gain.value = gainSlider.value / 100;
+    testAnalyser = testAudioCtx.createAnalyser();
+    testAnalyser.fftSize = 512;
+    src.connect(testGainNode);
+    testGainNode.connect(testAnalyser);
+    levelLoop();
+    testMicBtn.disabled = false;
+    testMicBtn.textContent = 'Add microphone';
+  }
+  testMicBtn.addEventListener('click', testMic);
+
+  muteToggle.addEventListener('change', ()=>{
+    if(testStream){ testStream.getAudioTracks().forEach(t => t.enabled = !muteToggle.checked); }
+    if(micStream){ micStream.getAudioTracks().forEach(t => t.enabled = !muteToggle.checked); }
+  });
+  // changing device/echo/noise settings invalidates an existing test stream
+  [micSelect, echoToggle, noiseToggle].forEach(el => el.addEventListener('change', ()=>{
+    if(testStream){ clearNote(); showNote('Settings changed. Click "Add microphone" again to apply them.'); deviceDesc.textContent = 'Click "Add microphone" below once to confirm which mic is active.'; teardownTest(); testMicBtn.textContent = 'Add microphone'; }
+  }));
+
+  async function start(){
+    clearError();
+    if(supportIssues.length) return;
+    chunks = [];
+    elapsedBeforePause = 0;
+    isPaused = false;
+
+    const preset = QUALITY_PRESETS[qualitySelect.value] || QUALITY_PRESETS.auto;
+    const fps = parseInt(fpsSelect.value, 10);
+    const videoConstraints = preset.width ? { width:{ideal:preset.width}, height:{ideal:preset.height}, frameRate:{ideal:fps} } : { frameRate:{ideal:fps} };
+
+    try{
+      displayStream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: sysAudioToggle.checked });
+    }catch(e){
+      showError('Screen recording could not start: screen sharing was cancelled or blocked. Nothing was recorded. Click "Start Recording" and choose a screen, window, or tab to share.');
+      return;
+    }
+
+    if(testStream){
+      micStream = testStream;
+      testStream = null;
+      cancelAnimationFrame(testRaf);
+    } else {
+      try{
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: currentAudioConstraints() });
+        populateMics();
+      }catch(e){
+        showError('Recording could not start: microphone access was blocked or unavailable (' + (e.message || e.name) + '). No video or audio was recorded.');
+        displayStream.getTracks().forEach(t=>t.stop());
+        return;
+      }
+    }
+    micStream.getAudioTracks().forEach(t => t.enabled = !muteToggle.checked);
+
+    try{
+      recAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = recAudioCtx.createMediaStreamDestination();
+      const micSource = recAudioCtx.createMediaStreamSource(micStream);
+      recGainNode = recAudioCtx.createGain();
+      recGainNode.gain.value = gainSlider.value / 100;
+      micSource.connect(recGainNode);
+      recGainNode.connect(dest);
+
+      const sysAudioTracks = displayStream.getAudioTracks();
+      if(sysAudioTracks.length > 0){
+        const sysSource = recAudioCtx.createMediaStreamSource(new MediaStream(sysAudioTracks));
+        sysSource.connect(dest);
+      }
+
+      recAnalyser = recAudioCtx.createAnalyser();
+      recAnalyser.fftSize = 128;
+      recDataArray = new Uint8Array(recAnalyser.frequencyBinCount);
+      recGainNode.connect(recAnalyser);
+
+      mixedStream = new MediaStream([ ...displayStream.getVideoTracks(), ...dest.stream.getAudioTracks() ]);
+
+      let mimeType;
+      if(formatSelect.value === 'mp4' && mp4Supported){
+        mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1' : 'video/mp4';
+      } else {
+        mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm';
+      }
+
+      mediaRecorder = new MediaRecorder(mixedStream, { mimeType, videoBitsPerSecond: preset.videoBitsPerSecond, audioBitsPerSecond: parseInt(audioBitrateSelect.value, 10) });
+    }catch(e){
+      showError('Recording could not start due to a setup error (' + (e.message || e.name) + '). No video or audio was recorded.');
+      [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t=>t.stop()));
+      if(recAudioCtx){ recAudioCtx.close(); recAudioCtx = null; }
+      return;
+    }
+
+    mediaRecorder.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
+    mediaRecorder.onstop = onStopped;
+    mediaRecorder.onerror = (e) => {
+      showError('Recording stopped unexpectedly due to an error. Any portion captured before the error may still be available below.');
+      stop();
+    };
+
+    displayStream.getVideoTracks()[0].addEventListener('ended', ()=>{
+      if(mediaRecorder && mediaRecorder.state !== 'inactive') stop();
+    });
+
+    try{
+      mediaRecorder.start(250);
+    }catch(e){
+      showError('Recording could not start (' + (e.message || e.name) + '). No video or audio was recorded.');
+      [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t=>t.stop()));
+      recAudioCtx.close();
+      return;
+    }
+
+    startTimer();
+    setStatus('recording');
+    animateBars();
+    sessionId = new Date().toISOString().replace(/[:.]/g,'-');
+
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    pauseBtn.textContent = 'Pause';
+    stopBtn.disabled = false;
+    resultRow.classList.remove('show');
+    [qualitySelect, micSelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect].forEach(el => el.disabled = true);
+  }
+
+  function pauseResume(){
+    if(!mediaRecorder) return;
+    if(mediaRecorder.state === 'recording'){
+      mediaRecorder.pause();
+      isPaused = true;
+      elapsedBeforePause += Date.now() - startTime;
+      setStatus('paused');
+      pauseBtn.textContent = 'Resume';
+      stopBarsIdle();
+    } else if(mediaRecorder.state === 'paused'){
+      mediaRecorder.resume();
+      isPaused = false;
+      startTime = Date.now();
+      setStatus('recording');
+      pauseBtn.textContent = 'Pause';
+      animateBars();
+    }
+  }
+
+  function stop(){
+    if(!mediaRecorder || mediaRecorder.state === 'inactive') return;
+    mediaRecorder.stop();
+  }
+
+  function onStopped(){
+    stopTimer();
+    stopBarsIdle();
+    setStatus('stopped');
+    [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t => t.stop()));
+    if(recAudioCtx){ recAudioCtx.close(); recAudioCtx = null; }
+    recGainNode = null;
+
+    const isMp4 = formatSelect.value === 'mp4' && mp4Supported;
+    const blob = new Blob(chunks, { type: isMp4 ? 'video/mp4' : 'video/webm' });
+    if(blob.size === 0){
+      showError('No data was captured, so there is nothing to download. Please try recording again.');
+    } else {
+      const url = URL.createObjectURL(blob);
+      const sizeMB = (blob.size / (1024*1024)).toFixed(1);
+      downloadLink.href = url;
+      const ts = new Date().toISOString().replace(/[:.]/g,'-');
+      downloadLink.download = 'recording-' + ts + (isMp4 ? '.mp4' : '.webm');
+      resultMeta.textContent = sizeMB + ' MB \u00b7 ' + timerEl.textContent;
+      resultRow.classList.add('show');
+      hasUnsavedRecording = true;
+      // Auto-download immediately so nothing is lost if the tab is closed afterward.
+      // Saves to your browser's default Downloads location (or prompts, if your browser
+      // is set to "ask where to save each file" — that setting lives in the browser, not this page).
+      downloadLink.click();
+      hasUnsavedRecording = false;
+    }
+
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    stopBtn.disabled = true;
+    [qualitySelect, micSelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect].forEach(el => el.disabled = false);
+  }
+
+  startBtn.addEventListener('click', start);
+  pauseBtn.addEventListener('click', pauseResume);
+  stopBtn.addEventListener('click', stop);
+
+  window.addEventListener('beforeunload', (e)=>{
+    const activelyRecording = mediaRecorder && (mediaRecorder.state === 'recording' || mediaRecorder.state === 'paused');
+    if(activelyRecording || hasUnsavedRecording){
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
+  });
+
+  // Fires if the user goes through with closing/navigating away despite the warning above.
+  window.addEventListener('pagehide', emergencySaveOnClose);
+  window.addEventListener('unload', emergencySaveOnClose);
+
+  // Appearance switcher. Shared with the instructions page through the same localStorage key,
+  // so a choice made on one page carries over to the other.
+  const appearanceBtn = document.getElementById('appearanceBtn');
+  const appearanceMenu = document.getElementById('appearanceMenu');
+  const appearanceOptions = document.querySelectorAll('.appearance-option');
+  const THEME_KEY = 'recorderAppearance';
+  const systemQuery = window.matchMedia('(prefers-color-scheme: light)');
+
+  function applyTheme(choice){
+    let resolved = choice;
+    if(choice === 'system'){ resolved = systemQuery.matches ? 'light' : 'dark'; }
+    document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-theme-choice', choice);
+    appearanceOptions.forEach(opt => opt.classList.toggle('active', opt.dataset.themeValue === choice));
+  }
+  function setTheme(choice){
+    localStorage.setItem(THEME_KEY, choice);
+    applyTheme(choice);
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme-choice') || 'dark');
+  systemQuery.addEventListener('change', ()=>{
+    if((localStorage.getItem(THEME_KEY) || 'dark') === 'system') applyTheme('system');
+  });
+  appearanceBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    appearanceMenu.classList.toggle('open');
+  });
+  appearanceOptions.forEach(opt => opt.addEventListener('click', ()=>{
+    setTheme(opt.dataset.themeValue);
+    appearanceMenu.classList.remove('open');
+  }));
+  document.addEventListener('click', (e)=>{
+    if(!appearanceMenu.contains(e.target) && e.target !== appearanceBtn){ appearanceMenu.classList.remove('open'); }
+  });
+})();
+</script>
+
+</body>
+</html>
