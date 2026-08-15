@@ -210,12 +210,6 @@
     30%{ transform: scale(1.08); opacity: 1; }
     100%{ transform: scale(1); opacity: 1; }
   }
-  .countdown-cancel{
-    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 10px 22px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.3);
-    background: transparent; color: #ffffff; cursor:pointer;
-  }
-  .countdown-cancel:hover{ border-color: #ffffff; }
 </style>
 </head>
 <body>
@@ -234,7 +228,6 @@
 
 <div class="countdown-overlay" id="countdownOverlay">
   <div class="countdown-number" id="countdownNumber">3</div>
-  <button class="countdown-cancel" id="countdownCancel">Cancel</button>
 </div>
 
 <div class="deck">
@@ -325,16 +318,7 @@
     <p class="panel-label">Microphone</p>
     <div class="note" id="micNote"></div>
 
-    <div class="opt-row" style="border-top:none; padding-top:0;" id="deviceRow">
-      <div class="opt-copy">
-        <div class="opt-title">Device</div>
-        <div class="opt-desc" id="deviceDesc">Click "Add microphone" below once to confirm which mic is active.</div>
-      </div>
-      <select id="micSelect" class="dropdown" style="display:none;">
-        <option value="">Default microphone</option>
-      </select>
-    </div>
-    <div class="opt-row">
+    <div class="opt-row" style="border-top:none;">
       <div class="opt-copy">
         <div class="opt-title">Microphone volume</div>
         <div class="opt-desc">Boost a quiet mic or turn down a hot one.</div>
@@ -456,8 +440,6 @@
   const sampleRateSelect = document.getElementById('sampleRateSelect');
   const gainSlider = document.getElementById('gainSlider');
   const gainLabel = document.getElementById('gainLabel');
-  const micSelect = document.getElementById('micSelect');
-  const deviceDesc = document.getElementById('deviceDesc');
   const muteToggle = document.getElementById('muteToggle');
   const testMicBtn = document.getElementById('testMicBtn');
   const levelFill = document.getElementById('levelFill');
@@ -466,7 +448,6 @@
   const micNote = document.getElementById('micNote');
   const countdownOverlay = document.getElementById('countdownOverlay');
   const countdownNumber = document.getElementById('countdownNumber');
-  const countdownCancel = document.getElementById('countdownCancel');
 
   // ---- support check ----
   const supportIssues = [];
@@ -563,7 +544,7 @@
   let sessionId = '';
   let countdownTimer = null;
 
-  const LOCKABLE_CONTROLS = [qualitySelect, micSelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect];
+  const LOCKABLE_CONTROLS = [qualitySelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect];
   function setControlsLocked(locked){
     LOCKABLE_CONTROLS.forEach(el => el.disabled = locked);
   }
@@ -637,33 +618,8 @@
       autoGainControl: false,
       sampleRate: { ideal: parseInt(sampleRateSelect.value, 10) }
     };
-    if(micSelect.value) c.deviceId = { exact: micSelect.value };
     return c;
   }
-
-  async function populateMics(){
-    try{
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const mics = devices.filter(d => d.kind === 'audioinput');
-      const current = micSelect.value;
-      micSelect.innerHTML = '<option value="">Default microphone</option>';
-      mics.forEach((d, i)=>{
-        const opt = document.createElement('option');
-        opt.value = d.deviceId;
-        if(d.label){
-          opt.textContent = d.label;
-          opt.dataset.real = '1';
-        } else {
-          opt.textContent = 'Microphone ' + (i+1);
-          opt.dataset.real = '0';
-        }
-        micSelect.appendChild(opt);
-      });
-      if(current) micSelect.value = current;
-    }catch(e){ /* listing unsupported; default mic still usable */ }
-  }
-  populateMics();
-  if(navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', populateMics);
 
   function levelLoop(){
     if(!testAnalyser) return;
@@ -707,24 +663,9 @@
       return;
     }
     testStream.getAudioTracks()[0].enabled = !muteToggle.checked;
-    // The currently active stream's own track always reports its true device name, regardless of
-    // whether enumerateDevices() exposes labels for your *other* devices (that part can be limited
-    // depending on how this page was opened).
+    // The currently active stream's own track always reports its true device name.
     const activeLabel = testStream.getAudioTracks()[0].label || 'your default microphone';
-    await populateMics();
-    const namedOptions = Array.from(micSelect.options).slice(1).filter(o => o.dataset.real === '1');
-    if(namedOptions.length > 1){
-      // Multiple real device names available — show the picker so the user can choose between them.
-      micSelect.style.display = '';
-      deviceDesc.textContent = 'Multiple microphones detected. Pick the one you want to use below.';
-    } else {
-      // Only one identifiable device (or names aren't exposed for the rest) — a picker with fake
-      // "Microphone 1 / Microphone 2" entries isn't useful, so just confirm what's actually active.
-      micSelect.style.display = 'none';
-      micSelect.value = '';
-      deviceDesc.textContent = 'Detected microphone: ' + activeLabel + '. This is the one that will be used when you start recording.';
-    }
-    showNote('Microphone connected. Speak to see the level move.');
+    showNote('Microphone connected: ' + activeLabel + '. Speak to see the level move.');
     testAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const src = testAudioCtx.createMediaStreamSource(testStream);
     testGainNode = testAudioCtx.createGain();
@@ -744,8 +685,8 @@
     if(micStream){ micStream.getAudioTracks().forEach(t => t.enabled = !muteToggle.checked); }
   });
   // changing device/echo/noise settings invalidates an existing test stream
-  [micSelect, echoToggle, noiseToggle].forEach(el => el.addEventListener('change', ()=>{
-    if(testStream){ clearNote(); showNote('Settings changed. Click "Add microphone" again to apply them.'); deviceDesc.textContent = 'Click "Add microphone" below once to confirm which mic is active.'; teardownTest(); testMicBtn.textContent = 'Add microphone'; }
+  [echoToggle, noiseToggle].forEach(el => el.addEventListener('change', ()=>{
+    if(testStream){ clearNote(); showNote('Settings changed. Click "Add microphone" again to apply them.'); teardownTest(); testMicBtn.textContent = 'Add microphone'; }
   }));
 
   async function start(){
@@ -789,7 +730,6 @@
     } else {
       try{
         micStream = await navigator.mediaDevices.getUserMedia({ audio: currentAudioConstraints() });
-        populateMics();
       }catch(e){
         abortStart('Recording could not start: microphone access was blocked or unavailable (' + (e.message || e.name) + '). No video or audio was recorded.');
         return;
@@ -898,7 +838,7 @@
     }, 1000);
   }
 
-  countdownCancel.addEventListener('click', ()=>{
+  function cancelPendingStart(){
     if(countdownTimer){
       clearInterval(countdownTimer);
       countdownTimer = null;
@@ -911,11 +851,12 @@
     micStream = null;
     startBtn.disabled = false;
     setControlsLocked(false);
-  });
+  }
 
+  // No visible cancel button during the countdown, but Escape still quietly works as a safety net.
   document.addEventListener('keydown', (e)=>{
     if(e.key === 'Escape' && countdownOverlay.classList.contains('show')){
-      countdownCancel.click();
+      cancelPendingStart();
     }
   });
 
