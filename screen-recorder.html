@@ -193,6 +193,29 @@
   }
   .appearance-option:hover{ background: var(--control-bg); }
   .appearance-option.active{ color: var(--ok); font-weight:600; }
+
+  .countdown-overlay{
+    display:none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,0.82);
+    flex-direction: column; align-items:center; justify-content:center; gap: 22px;
+  }
+  .countdown-overlay.show{ display:flex; }
+  .countdown-number{
+    font-family: var(--mono); font-weight: 700; color: var(--rec);
+    font-size: 140px; line-height:1;
+    animation: countdown-pulse 1s ease-out;
+  }
+  @keyframes countdown-pulse{
+    0%{ transform: scale(0.6); opacity: 0; }
+    30%{ transform: scale(1.08); opacity: 1; }
+    100%{ transform: scale(1); opacity: 1; }
+  }
+  .countdown-cancel{
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 10px 22px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.3);
+    background: transparent; color: #ffffff; cursor:pointer;
+  }
+  .countdown-cancel:hover{ border-color: #ffffff; }
 </style>
 </head>
 <body>
@@ -207,6 +230,11 @@
     <div class="appearance-option" data-theme-value="dark">Dark</div>
     <div class="appearance-option" data-theme-value="cream">Cream</div>
   </div>
+</div>
+
+<div class="countdown-overlay" id="countdownOverlay">
+  <div class="countdown-number" id="countdownNumber">3</div>
+  <button class="countdown-cancel" id="countdownCancel">Cancel</button>
 </div>
 
 <div class="deck">
@@ -436,6 +464,9 @@
   const levelLabel = document.getElementById('levelLabel');
   const errBox = document.getElementById('errBox');
   const micNote = document.getElementById('micNote');
+  const countdownOverlay = document.getElementById('countdownOverlay');
+  const countdownNumber = document.getElementById('countdownNumber');
+  const countdownCancel = document.getElementById('countdownCancel');
 
   // ---- support check ----
   const supportIssues = [];
@@ -530,6 +561,12 @@
   let isPaused = false;
   let hasUnsavedRecording = false;
   let sessionId = '';
+  let countdownTimer = null;
+
+  const LOCKABLE_CONTROLS = [qualitySelect, micSelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect];
+  function setControlsLocked(locked){
+    LOCKABLE_CONTROLS.forEach(el => el.disabled = locked);
+  }
 
   function showError(msg){ errBox.textContent = msg; errBox.classList.add('show'); }
   function clearError(){ errBox.classList.remove('show'); errBox.textContent=''; }
@@ -718,6 +755,22 @@
     elapsedBeforePause = 0;
     isPaused = false;
 
+    // Lock the UI right away, before any permission prompts, so Start can't be clicked twice
+    // while a request or the countdown is already in progress.
+    startBtn.disabled = true;
+    setControlsLocked(true);
+
+    function abortStart(message){
+      if(message) showError(message);
+      [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t=>t.stop()));
+      if(recAudioCtx){ recAudioCtx.close(); recAudioCtx = null; }
+      mediaRecorder = null;
+      displayStream = null;
+      micStream = null;
+      startBtn.disabled = false;
+      setControlsLocked(false);
+    }
+
     const preset = QUALITY_PRESETS[qualitySelect.value] || QUALITY_PRESETS.auto;
     const fps = parseInt(fpsSelect.value, 10);
     const videoConstraints = preset.width ? { width:{ideal:preset.width}, height:{ideal:preset.height}, frameRate:{ideal:fps} } : { frameRate:{ideal:fps} };
@@ -725,7 +778,7 @@
     try{
       displayStream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints, audio: sysAudioToggle.checked });
     }catch(e){
-      showError('Screen recording could not start: screen sharing was cancelled or blocked. Nothing was recorded. Click "Start Recording" and choose a screen, window, or tab to share.');
+      abortStart('Screen recording could not start: screen sharing was cancelled or blocked. Nothing was recorded. Click "Start Recording" and choose a screen, window, or tab to share.');
       return;
     }
 
@@ -738,8 +791,7 @@
         micStream = await navigator.mediaDevices.getUserMedia({ audio: currentAudioConstraints() });
         populateMics();
       }catch(e){
-        showError('Recording could not start: microphone access was blocked or unavailable (' + (e.message || e.name) + '). No video or audio was recorded.');
-        displayStream.getTracks().forEach(t=>t.stop());
+        abortStart('Recording could not start: microphone access was blocked or unavailable (' + (e.message || e.name) + '). No video or audio was recorded.');
         return;
       }
     }
@@ -776,9 +828,7 @@
 
       mediaRecorder = new MediaRecorder(mixedStream, { mimeType, videoBitsPerSecond: preset.videoBitsPerSecond, audioBitsPerSecond: parseInt(audioBitrateSelect.value, 10) });
     }catch(e){
-      showError('Recording could not start due to a setup error (' + (e.message || e.name) + '). No video or audio was recorded.');
-      [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t=>t.stop()));
-      if(recAudioCtx){ recAudioCtx.close(); recAudioCtx = null; }
+      abortStart('Recording could not start due to a setup error (' + (e.message || e.name) + '). No video or audio was recorded.');
       return;
     }
 
@@ -790,30 +840,84 @@
     };
 
     displayStream.getVideoTracks()[0].addEventListener('ended', ()=>{
-      if(mediaRecorder && mediaRecorder.state !== 'inactive') stop();
+      if(mediaRecorder && mediaRecorder.state !== 'inactive'){
+        stop();
+      } else if(countdownTimer){
+        // Screen sharing was stopped from the browser's own bar while the countdown was still running.
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        countdownOverlay.classList.remove('show');
+        abortStart(null);
+      }
     });
 
-    try{
-      mediaRecorder.start(250);
-    }catch(e){
-      showError('Recording could not start (' + (e.message || e.name) + '). No video or audio was recorded.');
-      [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t=>t.stop()));
-      recAudioCtx.close();
-      return;
-    }
+    // Screen and mic are ready. Give a 3, 2, 1 countdown before recording actually begins,
+    // so there is a moment to get in position first.
+    runCountdown(() => {
+      try{
+        mediaRecorder.start(250);
+      }catch(e){
+        abortStart('Recording could not start (' + (e.message || e.name) + '). No video or audio was recorded.');
+        return;
+      }
 
-    startTimer();
-    setStatus('recording');
-    animateBars();
-    sessionId = new Date().toISOString().replace(/[:.]/g,'-');
+      startTimer();
+      setStatus('recording');
+      animateBars();
+      sessionId = new Date().toISOString().replace(/[:.]/g,'-');
 
-    startBtn.disabled = true;
-    pauseBtn.disabled = false;
-    pauseBtn.textContent = 'Pause';
-    stopBtn.disabled = false;
-    resultRow.classList.remove('show');
-    [qualitySelect, micSelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect].forEach(el => el.disabled = true);
+      pauseBtn.disabled = false;
+      pauseBtn.textContent = 'Pause';
+      stopBtn.disabled = false;
+      resultRow.classList.remove('show');
+      // startBtn and the settings controls were already locked at the top of start().
+    });
   }
+
+  function runCountdown(onDone){
+    let count = 3;
+    countdownOverlay.classList.add('show');
+    countdownNumber.textContent = count;
+    countdownNumber.style.animation = 'none';
+    void countdownNumber.offsetWidth;
+    countdownNumber.style.animation = '';
+
+    countdownTimer = setInterval(()=>{
+      count--;
+      if(count > 0){
+        countdownNumber.textContent = count;
+        countdownNumber.style.animation = 'none';
+        void countdownNumber.offsetWidth;
+        countdownNumber.style.animation = '';
+      } else {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+        countdownOverlay.classList.remove('show');
+        onDone();
+      }
+    }, 1000);
+  }
+
+  countdownCancel.addEventListener('click', ()=>{
+    if(countdownTimer){
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    countdownOverlay.classList.remove('show');
+    [displayStream, micStream].forEach(s => s && s.getTracks().forEach(t=>t.stop()));
+    if(recAudioCtx){ recAudioCtx.close(); recAudioCtx = null; }
+    mediaRecorder = null;
+    displayStream = null;
+    micStream = null;
+    startBtn.disabled = false;
+    setControlsLocked(false);
+  });
+
+  document.addEventListener('keydown', (e)=>{
+    if(e.key === 'Escape' && countdownOverlay.classList.contains('show')){
+      countdownCancel.click();
+    }
+  });
 
   function pauseResume(){
     if(!mediaRecorder) return;
@@ -870,7 +974,7 @@
     startBtn.disabled = false;
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
-    [qualitySelect, micSelect, sysAudioToggle, noiseToggle, echoToggle, audioBitrateSelect, testMicBtn, fpsSelect, formatSelect, sampleRateSelect].forEach(el => el.disabled = false);
+    setControlsLocked(false);
   }
 
   startBtn.addEventListener('click', start);
